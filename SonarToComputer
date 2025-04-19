@@ -1,0 +1,69 @@
+import serial
+import time
+
+# Configuration
+SERIAL_PORT = 'COM3'       # Change to the actual port you're using
+BAUD_RATE = 115200
+MAX_STEPS = 11000
+DISTANCE_WINDOW = 5        # How many readings to store for trend analysis
+
+# Setup serial connection
+try:
+    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+    time.sleep(2)  # Give device time to reset
+except Exception as e:
+    print(f"Failed to connect to serial port: {e}")
+    ser = None
+
+# Rolling buffer to track recent distance readings
+distance_array = []
+
+def update_distance(new_distance):
+    distance_array.append(new_distance)
+    if len(distance_array) > DISTANCE_WINDOW:
+        distance_array.pop(0)
+
+def calculate_steps():
+    if len(distance_array) < 2:
+        return 0
+
+    prev = distance_array[-2]
+    curr = distance_array[-1]
+
+    if curr <= 152.4:  # 5 feet = 152.4 cm
+        return MAX_STEPS
+
+    # Rate of approach: positive if approaching
+    delta = prev - curr
+    rate = max(0.0, min(delta / 15.0, 1.0))  # delta normalized over 15cm
+
+    # Proximity factor: how close we are to 152.4cm
+    proximity = max(0.0, min((457.2 - curr) / (457.2 - 152.4), 1.0))  # 15ft = 457.2 cm
+
+    braking_ratio = rate * proximity
+    return int(braking_ratio * MAX_STEPS)
+
+# Main loop to listen for raw sonar distance input
+if ser:
+    try:
+        while True:
+            if ser.in_waiting > 0:
+                raw_data = ser.readline().decode().strip()
+                try:
+                    distance_cm = float(raw_data)
+                    update_distance(distance_cm)
+                    steps = calculate_steps()
+
+                    # Send calculated steps to Arduino Mega
+                    ser.write(f"{steps}\n".encode())
+                    print(f"Distance: {distance_cm:.2f} cm | Steps sent: {steps}")
+                except ValueError:
+                    print(f"Ignoring invalid data: {raw_data}")
+
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        print("Stopped by user.")
+    finally:
+        ser.close()
+else:
+    print("Serial not initialized.")
